@@ -47,15 +47,16 @@ function wrapAndEscapeCaption(text, maxCharsPerLine = 28) {
   }
   if (current) lines.push(current);
 
-  const NEWLINE_TOKEN = "";
-  const escaped = lines
-    .join(NEWLINE_TOKEN)
-    .replace(/\\/g, "\\\\")
-    // A literal ' can't be escaped with a backslash inside a single-quoted
-    // ffmpeg filter value - it has to close the quote, insert an escaped
-    // quote, then reopen the quote: '\''
-    .replace(/'/g, "'\\''");
-  return escaped.split(NEWLINE_TOKEN).join("\\n");
+  return lines
+    .map((line) =>
+      line
+        .replace(/\\/g, "\\\\")
+        // A literal ' can't be escaped with a backslash inside a single-quoted
+        // ffmpeg filter value - it has to close the quote, insert an escaped
+        // quote, then reopen the quote: '\''
+        .replace(/'/g, "'\\''")
+    )
+    .join("\\n");
 }
 
 // Where a given scene's rendered (silent, caption-burned) clip lives on
