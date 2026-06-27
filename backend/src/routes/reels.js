@@ -171,14 +171,26 @@ async function runGenerationPipeline(id, prompt, genre, job) {
     job.stage = `generating scene ${i + 1} of ${story.scenes.length} art`;
 
     const imgPrompt = image_prompts.find((p) => p.scene === scene.scene) || image_prompts[i];
+    // Groq occasionally returns fewer image_prompts entries than scenes (a
+    // dropped scene in its JSON output) - rather than crash the whole reel
+    // on one bad scene, fall back to the scene's own visual description so
+    // generation can still finish, just with a slightly less tailored prompt
+    // for that one scene.
+    if (!imgPrompt) {
+      console.warn(
+        `Scene ${scene.scene}: Groq returned no image prompt for it - falling back to the scene's visual description.`
+      );
+    }
+    const promptStart = imgPrompt?.prompt_start || scene.visual;
+    const promptEnd = imgPrompt?.prompt_end || scene.visual;
     const { imagePathStart, imagePathEnd } = scenePaths(workDir, scene.scene);
 
-    const { url: urlStart } = await generateSceneImage(imgPrompt.prompt_start);
+    const { url: urlStart } = await generateSceneImage(promptStart);
     await downloadImage(urlStart, imagePathStart);
 
     await new Promise((resolve) => setTimeout(resolve, 1000));
 
-    const { url: urlEnd } = await generateSceneImage(imgPrompt.prompt_end);
+    const { url: urlEnd } = await generateSceneImage(promptEnd);
     await downloadImage(urlEnd, imagePathEnd);
 
     scenesWithImages.push({
