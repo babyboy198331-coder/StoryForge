@@ -33,6 +33,12 @@ if (!HAS_MINTERPOLATE) {
   );
 }
 
+// Some stripped Linux builds list minterpolate in -filters but fail at
+// runtime ("Filter not found"). This flag starts as HAS_MINTERPOLATE and is
+// flipped to false the first time a runtime failure is detected, so all
+// subsequent scene renders use the safe tblend fallback without retrying.
+let runtimeMinterpolate = HAS_MINTERPOLATE;
+
 // Burned-in captions: free, since the narration text already exists from
 // Groq. Skipped automatically if the font file isn't found, so this never
 // breaks generation on a machine without it.
@@ -111,59 +117,86 @@ export function sceneClipPath(workDir, sceneNumber) {
 // means regenerating a single scene later only has to pay this cost once,
 // for that one scene, instead of re-running it across every scene in the
 // reel just to change one of them.
+function buildSceneCommand({ scene, outputPath, motionMode, useFallback }) {
+  const duration = scene.duration_seconds || 6;
+  const halfDuration = Math.max(0.05, duration / 2);
+
+  const command = ffmpeg();
+  command.input(scene.imagePathStart).loop(halfDuration);
+  command.input(scene.imagePathEnd).loop(halfDuration);
+
+  // "mci" (motion-compensated interpolation) looks like real movement but
+  // is CPU-heavy - the obmc/bidir/vsbmc options only apply to that mode.
+  // "blend" is a cheap crossfade: much faster, used for scene regenerate
+  // so a single-scene edit doesn't make someone wait 15+ seconds.
+  // tblend=average + framerate is the fallback: it blends adjacent frames
+  // into a soft crossfade, the same effect "blend" mode gets from
+  // minterpolate, just without true motion-compensated warping. Used for
+  // BOTH modes when minterpolate is unavailable, since "mci" has no other
+  // equivalent in a build that lacks the filter entirely.
+  const motionFilter = useFallback
+    ? `tblend=all_mode=average,framerate=fps=${OUTPUT_FPS}`
+    : motionMode === "blend"
+      ? `minterpolate=fps=${OUTPUT_FPS}:mi_mode=blend`
+      : `minterpolate=fps=${OUTPUT_FPS}:mi_mode=${motionMode}:mc_mode=obmc:me_mode=bidir:vsbmc=1`;
+
+  let complexFilter =
+    `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,` +
+    `setsar=1,trim=duration=${halfDuration},fps=25[a]` +
+    `;[1:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,` +
+    `setsar=1,trim=duration=${halfDuration},fps=25[b]` +
+    `;[a][b]concat=n=2:v=1:a=0[pre]` +
+    `;[pre]${motionFilter},` +
+    `trim=duration=${duration},setsar=1`;
+
+  if (CAPTIONS_ENABLED && scene.narration) {
+    const caption = wrapAndEscapeCaption(scene.narration);
+    complexFilter +=
+      `,drawtext=fontfile='${CAPTION_FONT}':text='${caption}':fontsize=46:fontcolor=white:` +
+      `box=1:boxcolor=black@0.55:boxborderw=18:line_spacing=10:` +
+      `x=(w-text_w)/2:y=h-th-160`;
+  }
+
+  complexFilter += `[outv]`;
+
+  command
+    .complexFilter(complexFilter)
+    .outputOptions(["-map [outv]", "-an", "-pix_fmt yuv420p", "-preset", "veryfast"])
+    .fps(OUTPUT_FPS)
+    .output(outputPath);
+
+  return command;
+}
+
 export function renderSceneClip({ scene, outputPath, motionMode = MI_MODE }) {
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+
   return new Promise((resolve, reject) => {
-    const duration = scene.duration_seconds || 6;
-    const halfDuration = Math.max(0.05, duration / 2);
+    const attempt = (useFallback) => {
+      const command = buildSceneCommand({ scene, outputPath, motionMode, useFallback });
+      command
+        .on("end", () => resolve(outputPath))
+        .on("error", (err) => {
+          // Some stripped Linux builds list minterpolate in `ffmpeg -filters`
+          // but fail with "Filter not found" at runtime. Detect this once,
+          // permanently disable minterpolate for all future renders, and retry
+          // this scene with the tblend fallback so the build doesn't abort.
+          if (!useFallback && /Filter not found/i.test(err.message)) {
+            console.warn(
+              "minterpolate listed but unavailable at runtime - " +
+                "switching to tblend fallback for all renders."
+            );
+            runtimeMinterpolate = false;
+            fs.rmSync(outputPath, { force: true });
+            attempt(true);
+          } else {
+            reject(err);
+          }
+        })
+        .run();
+    };
 
-    const command = ffmpeg();
-    command.input(scene.imagePathStart).loop(halfDuration);
-    command.input(scene.imagePathEnd).loop(halfDuration);
-
-    // "mci" (motion-compensated interpolation) looks like real movement but
-    // is CPU-heavy - the obmc/bidir/vsbmc options only apply to that mode.
-    // "blend" is a cheap crossfade: much faster, used for scene regenerate
-    // so a single-scene edit doesn't make someone wait 15+ seconds.
-    // tblend=average + framerate is the fallback: it blends adjacent frames
-    // into a soft crossfade, the same effect "blend" mode gets from
-    // minterpolate, just without true motion-compensated warping. Used for
-    // BOTH modes when minterpolate is unavailable, since "mci" has no other
-    // equivalent in a build that lacks the filter entirely.
-    const motionFilter = !HAS_MINTERPOLATE
-      ? `tblend=all_mode=average,framerate=fps=${OUTPUT_FPS}`
-      : motionMode === "blend"
-        ? `minterpolate=fps=${OUTPUT_FPS}:mi_mode=blend`
-        : `minterpolate=fps=${OUTPUT_FPS}:mi_mode=${motionMode}:mc_mode=obmc:me_mode=bidir:vsbmc=1`;
-
-    let complexFilter =
-      `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,` +
-      `setsar=1,trim=duration=${halfDuration},fps=25[a]` +
-      `;[1:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,` +
-      `setsar=1,trim=duration=${halfDuration},fps=25[b]` +
-      `;[a][b]concat=n=2:v=1:a=0[pre]` +
-      `;[pre]${motionFilter},` +
-      `trim=duration=${duration},setsar=1`;
-
-    if (CAPTIONS_ENABLED && scene.narration) {
-      const caption = wrapAndEscapeCaption(scene.narration);
-      complexFilter +=
-        `,drawtext=fontfile='${CAPTION_FONT}':text='${caption}':fontsize=46:fontcolor=white:` +
-        `box=1:boxcolor=black@0.55:boxborderw=18:line_spacing=10:` +
-        `x=(w-text_w)/2:y=h-th-160`;
-    }
-
-    complexFilter += `[outv]`;
-
-    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-
-    command
-      .complexFilter(complexFilter)
-      .outputOptions(["-map [outv]", "-an", "-pix_fmt yuv420p", "-preset", "veryfast"])
-      .fps(OUTPUT_FPS)
-      .output(outputPath)
-      .on("end", () => resolve(outputPath))
-      .on("error", reject)
-      .run();
+    attempt(!runtimeMinterpolate);
   });
 }
 
