@@ -4,6 +4,7 @@ import cors from "cors";
 import path from "path";
 import storyRouter from "./routes/story.js";
 import reelsRouter from "./routes/reels.js";
+import adminRouter from "./routes/admin.js";
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -53,6 +54,7 @@ app.use("/media", express.static(path.join(process.cwd(), "storage"), {
 
 app.use("/api/story", storyRouter);
 app.use("/api/reels", reelsRouter);
+app.use("/api/admin", adminRouter);
 
 app.get("/api/health", (req, res) => res.json({ ok: true }));
 
