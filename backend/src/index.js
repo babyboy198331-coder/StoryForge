@@ -8,12 +8,38 @@ import reelsRouter from "./routes/reels.js";
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-// Restrict to the deployed frontend's origin in production via FRONTEND_URL
-// (e.g. https://storyforge.vercel.app). Falls back to allowing any origin
-// when unset, which is fine for local dev but should be set once this is
-// publicly deployed.
+// Restrict to the deployed frontend's origin(s) in production via FRONTEND_URL
+// (comma-separated if you have more than one, e.g.
+// "https://storyforge.vercel.app,https://staging.storyforge.vercel.app").
+// Falls back to allowing any origin when unset, which is fine for local dev
+// but should be set once this is publicly deployed.
 const FRONTEND_URL = process.env.FRONTEND_URL;
-app.use(cors(FRONTEND_URL ? { origin: FRONTEND_URL } : {}));
+const allowedOrigins = FRONTEND_URL
+  ? FRONTEND_URL.split(",").map((s) => s.trim()).filter(Boolean)
+  : [];
+
+// Vercel also gives every individual deployment of this project its own
+// unique URL (e.g. story-forge-<hash>-<team>.vercel.app) separate from the
+// stable production domain set above. Allow those too, so CORS doesn't break
+// just because someone opens a deployment-specific link (which Vercel shows
+// after every deploy) instead of the production URL.
+const VERCEL_PREVIEW_PATTERN = /^https:\/\/story-forge-[a-z0-9]+-babyboy198331-coders-projects\.vercel\.app$/;
+
+app.use(
+  cors(
+    allowedOrigins.length
+      ? {
+          origin(origin, callback) {
+            if (!origin || allowedOrigins.includes(origin) || VERCEL_PREVIEW_PATTERN.test(origin)) {
+              callback(null, true);
+            } else {
+              callback(new Error("Not allowed by CORS"));
+            }
+          },
+        }
+      : {}
+  )
+);
 app.use(express.json());
 
 // Serve generated videos/images so the frontend can play/display them directly.
