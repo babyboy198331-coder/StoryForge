@@ -233,12 +233,13 @@ they won't survive a redeploy/restart.
 - Scene art (the JPEGs ffmpeg uses as ffmpeg input) stays on Pollinations'
   own CDN - the frontend reads `imageUrlStart`/`imageUrlEnd` directly from
   there, so there's nothing to upload for those.
-- The homepage's pinned "featured" reel plays from
-  `backend/storage/featured-combined.mp4`, a manually pre-built demo clip
-  outside the generation pipeline. It isn't auto-uploaded to R2 - either
-  commit it to the repo (drop the gitignore-equivalent exception in) so it
-  ships with every deploy, or upload it to R2 yourself once and hardcode
-  its R2 URL in `frontend/app/page.tsx`.
+- The homepage's pinned "featured" reel plays directly from that reel's own
+  `videoUrl` (its R2-hosted MP4) - same as any other reel in the feed, just
+  pinned to the top via `PINNED_REEL_ID` in `frontend/app/page.tsx`. An
+  admin-only endpoint (`POST /api/admin/seed-featured`, see
+  `backend/src/routes/admin.js`) idempotently seeds that pinned reel from
+  bundled assets in `backend/seed-assets/` on a fresh deploy/database, so a
+  visitor sees a fully-rendered reel immediately instead of an empty feed.
 - Without R2 configured, regenerating a scene works fine while the Railway
   container stays up, but a redeploy/restart wipes local disk - any reel
   generated before that point loses its video file (the Postgres row
