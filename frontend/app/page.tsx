@@ -59,9 +59,10 @@ export default async function HomePage() {
   const rest = reels.filter((r) => r.id !== pinned.id);
   const { local: pinnedPoster } = sceneImg(pinned);
 
-  // Pre-concatenated video: Dragon Delivery Service + Elevator to Nowhere
-  // assembled once with FFmpeg — no AI calls on page load.
-  const featuredSrc = mediaUrl("/media/featured-combined.mp4");
+  // Play the pinned reel's actual rendered video directly (R2 URL in
+  // production, local /media path in dev) instead of a separately
+  // pre-assembled file that may not exist on this deployment.
+  const featuredSrc = mediaUrl(pinned.videoUrl);
 
   return (
     <div className="home-page">
