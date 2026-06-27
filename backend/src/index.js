@@ -8,7 +8,12 @@ import reelsRouter from "./routes/reels.js";
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-app.use(cors());
+// Restrict to the deployed frontend's origin in production via FRONTEND_URL
+// (e.g. https://storyforge.vercel.app). Falls back to allowing any origin
+// when unset, which is fine for local dev but should be set once this is
+// publicly deployed.
+const FRONTEND_URL = process.env.FRONTEND_URL;
+app.use(cors(FRONTEND_URL ? { origin: FRONTEND_URL } : {}));
 app.use(express.json());
 
 // Serve generated videos/images so the frontend can play/display them directly.

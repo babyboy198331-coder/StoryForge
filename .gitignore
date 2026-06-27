@@ -3,3 +3,8 @@ node_modules/
 .env
 backend/storage/
 *.log
+
+# leftover extraction artifacts from pulling the DejaVu font out of its npm
+# package - safe to delete, harmless if left in place
+backend/package/
+backend/dejavu-fonts-ttf-*.tgz

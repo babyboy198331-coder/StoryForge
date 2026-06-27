@@ -11,8 +11,21 @@ const OUTPUT_FPS = 30;
 // Burned-in captions: free, since the narration text already exists from
 // Groq. Skipped automatically if the font file isn't found, so this never
 // breaks generation on a machine without it.
-const CAPTION_FONT = process.env.CAPTION_FONT_PATH || "C:/Windows/Fonts/arialbd.ttf";
-const CAPTIONS_ENABLED = fs.existsSync(CAPTION_FONT);
+//
+// Defaults to a bundled DejaVu Sans Bold (backend/fonts/) rather than a
+// Windows-only system path - the old default of C:/Windows/Fonts/arialbd.ttf
+// silently disabled captions on every non-Windows deploy target (Railway,
+// any Linux/Mac host), since that path never exists there.
+const CAPTION_FONT_RAW =
+  process.env.CAPTION_FONT_PATH || path.join(process.cwd(), "fonts", "DejaVuSans-Bold.ttf");
+// ffmpeg's drawtext filter treats backslashes as escape characters, so a
+// Windows-style path (e.g. from path.join on Windows) breaks the filter
+// string. Forward slashes work fine in ffmpeg paths on every OS.
+const CAPTION_FONT = CAPTION_FONT_RAW.replace(/\\/g, "/");
+const CAPTIONS_ENABLED = fs.existsSync(CAPTION_FONT_RAW);
+if (!CAPTIONS_ENABLED) {
+  console.warn(`Caption font not found at ${CAPTION_FONT_RAW} - captions will be disabled.`);
+}
 
 // Background music: free, optional. Looks for a random track in MUSIC_DIR.
 // Mixed in quietly under narration, or used alone in caption-only mode.

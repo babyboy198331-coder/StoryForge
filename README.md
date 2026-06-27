@@ -150,14 +150,14 @@ that framing tends to produce the most varied, generatable story ideas.
   to Windows' built-in Arial Bold); if that file isn't found, captions are
   skipped automatically rather than breaking generation.
 - No auth, likes, comments, or following yet - the feed currently just lists
-  every reel ever generated, newest first, from `backend/storage/feed.json`.
+  every reel ever generated, newest first, from Postgres (or
+  `backend/storage/feed.json` locally if `DATABASE_URL` isn't set).
 - Avoid prompting for copyrighted characters/franchises - keep story ideas
   original to stay clear of any IP issues.
 
 ## Suggested next features (portfolio polish)
 
 - User accounts (Firebase Auth or NextAuth) + per-user reel ownership
-- Postgres/Prisma (or even SQLite) instead of the flat `feed.json` file
 - Likes, comments, follows, search
 - Per-scene generation progress (polling/SSE) instead of a static
   "Generating..." button during the 1-2 minute pipeline run
@@ -166,3 +166,80 @@ that framing tends to produce the most varied, generatable story ideas.
 - Swap Pollinations for Stability/DALL·E and add a "regenerate scene" button
 - Lazy-load/pause feed videos outside the viewport (IntersectionObserver)
   instead of autoplaying every video in the feed at once
+
+## Deployment
+
+Three pieces, three providers: **Vercel** (frontend), **Railway** (backend +
+Postgres), **Cloudflare R2** (generated video storage). Local dev is
+unaffected - all of this is opt-in via env vars, and everything still falls
+back to the original local-disk/flat-file behavior if you skip a piece.
+
+### 1. Cloudflare R2 (cloud storage for generated videos)
+
+1. In the Cloudflare dashboard, go to **R2** and create a bucket (e.g.
+   `storyforge-media`).
+2. Open the bucket's **Settings** tab and enable **Public Access** - this
+   gives you a public `https://pub-xxxxxxxx.r2.dev` base URL. (For a custom
+   domain instead, map one to the bucket and use that as the public URL.)
+3. Go to **R2 → Manage API Tokens** and create a token with **Object
+   Read & Write** permission scoped to that bucket. Note the Access Key ID,
+   Secret Access Key, and your Account ID (shown in the R2 dashboard sidebar).
+4. You'll plug these into the backend's env vars in step 3 below:
+   `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
+   `R2_BUCKET_NAME`, `R2_PUBLIC_URL` (the public base URL from step 2, no
+   trailing slash).
+
+If you skip this entirely, generated videos are just served from the
+backend's local disk via `/media` - fine for local dev, but on Railway
+they won't survive a redeploy/restart.
+
+### 2. Railway (backend + Postgres)
+
+1. Create a new Railway project from this repo. When prompted for the
+   service's root directory, set it to `backend`.
+2. Add a **Postgres** plugin to the project (Railway → New → Database →
+   PostgreSQL). Railway automatically injects `DATABASE_URL` into every
+   other service in the same project, including your backend - no manual
+   wiring needed. The backend creates its `reels` table itself on first
+   request.
+3. On the backend service, set these environment variables:
+   - `GROQ_API_KEY` (required - from https://console.groq.com/keys)
+   - `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
+     `R2_BUCKET_NAME`, `R2_PUBLIC_URL` (from step 1)
+   - `FRONTEND_URL` - set this once you have your Vercel URL (step 3),
+     e.g. `https://storyforge.vercel.app`. CORS allows all origins until
+     this is set, which is fine to start with but worth locking down.
+   - Optionally `MUSIC_DIR=./music` if you've committed royalty-free
+     tracks to `backend/music/` (see Setup above).
+4. Railway sets `PORT` automatically; the app already reads
+   `process.env.PORT`, so no change needed there.
+5. Deploy. Railway's Linux build environment downloads the Linux build of
+   `ffmpeg-static` automatically - no extra setup needed for FFmpeg.
+6. Note the public URL Railway gives the backend service (something like
+   `https://storyforge-backend.up.railway.app`) - you'll need it for the
+   frontend's env var next.
+
+### 3. Vercel (frontend)
+
+1. Import this repo into Vercel. Set the project's **Root Directory** to
+   `frontend`. Vercel auto-detects Next.js - no other build config needed.
+2. Add an environment variable: `NEXT_PUBLIC_API_BASE_URL` = your Railway
+   backend's public URL from step 2.6 (no trailing slash).
+3. Deploy. Once it's live, go back to Railway and set `FRONTEND_URL` to
+   this Vercel URL so CORS is locked down to just your frontend.
+
+### Notes
+
+- Scene art (the JPEGs ffmpeg uses as ffmpeg input) stays on Pollinations'
+  own CDN - the frontend reads `imageUrlStart`/`imageUrlEnd` directly from
+  there, so there's nothing to upload for those.
+- The homepage's pinned "featured" reel plays from
+  `backend/storage/featured-combined.mp4`, a manually pre-built demo clip
+  outside the generation pipeline. It isn't auto-uploaded to R2 - either
+  commit it to the repo (drop the gitignore-equivalent exception in) so it
+  ships with every deploy, or upload it to R2 yourself once and hardcode
+  its R2 URL in `frontend/app/page.tsx`.
+- Without R2 configured, regenerating a scene works fine while the Railway
+  container stays up, but a redeploy/restart wipes local disk - any reel
+  generated before that point loses its video file (the Postgres row
+  survives, just not the on-disk MP4) unless R2 was set up.

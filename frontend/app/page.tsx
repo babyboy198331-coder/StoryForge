@@ -92,7 +92,7 @@ export default async function HomePage() {
                       />
                     </Link>
                     <a
-                      href={mediaUrl(`/media/${reel.id}/output.mp4`)}
+                      href={mediaUrl(reel.videoUrl)}
                       download={`${reel.title.replace(/[^a-z0-9]/gi, "-")}.mp4`}
                       className="mini-reel-download"
                       title="Download MP4"

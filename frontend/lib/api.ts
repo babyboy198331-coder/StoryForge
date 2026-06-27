@@ -93,6 +93,13 @@ export async function deleteReel(id: string): Promise<void> {
   if (!res.ok) throw new Error("Failed to delete reel");
 }
 
+// Reel video URLs can now be either a relative backend path
+// (`/media/{id}/output.mp4`, served locally - the default without R2
+// configured) or an absolute Cloudflare R2 URL (once R2 is configured on
+// the backend). Only prefix with API_BASE_URL for the relative case -
+// prefixing an already-absolute URL would produce a broken
+// "http://api-host/https://r2-host/..." string.
 export function mediaUrl(path: string) {
+  if (/^https?:\/\//i.test(path)) return path;
   return `${API_BASE_URL}${path}`;
 }

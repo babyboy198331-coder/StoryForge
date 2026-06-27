@@ -8,25 +8,12 @@ import { synthesizeNarration } from "../services/tts.js";
 import { pickMusicTrack } from "../services/music.js";
 import { assembleVideo, renderSceneClip, sceneClipPath } from "../services/ffmpeg.js";
 import { downloadImage } from "../utils/downloadImage.js";
+import { uploadOutputVideo } from "../services/storage.js";
+import { listReelsNewestFirst, getReel, insertReel, updateReel, deleteReel } from "../services/feedStore.js";
 
 const router = express.Router();
 
 const STORAGE_DIR = path.join(process.cwd(), "storage");
-const FEED_FILE = path.join(STORAGE_DIR, "feed.json");
-
-function loadFeed() {
-  if (!fs.existsSync(FEED_FILE)) return [];
-  return JSON.parse(fs.readFileSync(FEED_FILE, "utf-8"));
-}
-
-function saveFeed(feed) {
-  fs.mkdirSync(STORAGE_DIR, { recursive: true });
-  // Rotate backup before every write so feed.json can always be restored
-  if (fs.existsSync(FEED_FILE)) {
-    fs.copyFileSync(FEED_FILE, FEED_FILE + ".bak");
-  }
-  fs.writeFileSync(FEED_FILE, JSON.stringify(feed, null, 2));
-}
 
 // Where a scene's start/end stills should be WRITTEN when generating fresh
 // images for it (initial generation, or the target of a regenerate). Always
@@ -104,15 +91,25 @@ function newJob(id, totalScenes) {
 }
 
 // GET /api/reels - list generated reels for the feed
-router.get("/", (req, res) => {
-  res.json(loadFeed().reverse());
+router.get("/", async (req, res) => {
+  try {
+    res.json(await listReelsNewestFirst());
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to load feed" });
+  }
 });
 
 // GET /api/reels/:id - fetch a single reel (used by the scene-editing page)
-router.get("/:id", (req, res) => {
-  const reel = loadFeed().find((r) => r.id === req.params.id);
-  if (!reel) return res.status(404).json({ error: "Reel not found" });
-  res.json(reel);
+router.get("/:id", async (req, res) => {
+  try {
+    const reel = await getReel(req.params.id);
+    if (!reel) return res.status(404).json({ error: "Reel not found" });
+    res.json(reel);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to load reel" });
+  }
 });
 
 // GET /api/reels/generate/:id/status - poll generation progress
@@ -211,6 +208,12 @@ async function runGenerationPipeline(id, prompt, genre, job) {
   const outputPath = path.join(workDir, "output.mp4");
   await assembleVideo({ scenes: scenesWithImages, outputPath, narrationAudioPath, musicPath, workDir });
 
+  job.stage = "uploading video";
+  // Upload to R2 (Cloudflare cloud storage) when configured so the reel
+  // survives Railway restarts/redeploys and serves from R2's CDN instead of
+  // our own backend. Falls back to the local /media static route in dev.
+  const r2Url = await uploadOutputVideo(outputPath, id);
+
   const reel = {
     id,
     title: story.title,
@@ -221,15 +224,13 @@ async function runGenerationPipeline(id, prompt, genre, job) {
     characters: story.characters || [],
     musicPath: musicPath || null,
     scenes: scenesWithImages.map(({ imagePathStart, imagePathEnd, ...rest }) => rest),
-    videoUrl: `/media/${id}/output.mp4`,
+    videoUrl: r2Url || `/media/${id}/output.mp4`,
     hasNarration: Boolean(narrationAudioPath),
     hasMusic: Boolean(musicPath),
     createdAt: new Date().toISOString(),
   };
 
-  const feed = loadFeed();
-  feed.push(reel);
-  saveFeed(feed);
+  await insertReel(reel);
 
   job.status = "done";
   job.stage = "done";
@@ -254,15 +255,13 @@ router.post("/:id/scenes/:sceneNumber/regenerate", async (req, res) => {
     // "Conversion failed!" 500s when multiple scenes were regenerated back
     // to back.
     const reel = await withReelLock(id, async () => {
-      const feed = loadFeed();
-      const reelIndex = feed.findIndex((r) => r.id === id);
-      if (reelIndex === -1) {
+      const reel = await getReel(id);
+      if (!reel) {
         const err = new Error("Reel not found");
         err.statusCode = 404;
         throw err;
       }
 
-      const reel = feed[reelIndex];
       const sceneIndex = reel.scenes.findIndex((s) => s.scene === sceneNum);
       if (sceneIndex === -1) {
         const err = new Error("Scene not found");
@@ -343,8 +342,12 @@ router.post("/:id/scenes/:sceneNumber/regenerate", async (req, res) => {
         workDir,
       });
 
-      feed[reelIndex] = reel;
-      saveFeed(feed);
+      // Re-upload the freshly-rendered video so the R2 copy (if configured)
+      // reflects the regenerated scene, not the stale pre-edit version.
+      const r2Url = await uploadOutputVideo(outputPath, id);
+      reel.videoUrl = r2Url || `/media/${id}/output.mp4`;
+
+      await updateReel(reel);
 
       return reel;
     });
@@ -356,21 +359,24 @@ router.post("/:id/scenes/:sceneNumber/regenerate", async (req, res) => {
   }
 });
 
-router.delete("/:id", (req, res) => {
-  const { id } = req.params;
-  const feed = loadFeed();
-  const idx = feed.findIndex((r) => r.id === id);
-  if (idx === -1) return res.status(404).json({ error: "Reel not found" });
+router.delete("/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const reel = await getReel(id);
+    if (!reel) return res.status(404).json({ error: "Reel not found" });
 
-  feed.splice(idx, 1);
-  saveFeed(feed);
+    await deleteReel(id);
 
-  const reelDir = path.join(STORAGE_DIR, id);
-  if (fs.existsSync(reelDir)) {
-    fs.rmSync(reelDir, { recursive: true, force: true });
+    const reelDir = path.join(STORAGE_DIR, id);
+    if (fs.existsSync(reelDir)) {
+      fs.rmSync(reelDir, { recursive: true, force: true });
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to delete reel" });
   }
-
-  res.json({ ok: true });
 });
 
 export default router;
