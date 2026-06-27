@@ -3,10 +3,35 @@ import ffmpeg from "fluent-ffmpeg";
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { execFileSync } from "child_process";
 
 ffmpeg.setFfmpegPath(ffmpegPath);
 
 const OUTPUT_FPS = 30;
+
+// Not every platform build of ffmpeg-static ships with "minterpolate" - the
+// Linux binaries pulled in by ffmpeg-static's installer are a smaller build
+// than e.g. the Windows gyan.dev "essentials" build, and have been known to
+// drop it. Rather than find this out mid-render (ffmpeg fails the whole
+// complexFilter with "Filter not found" and the scene clip never gets
+// written), check once at startup and fall back to a filter chain that's
+// part of every ffmpeg build, so a render degrades gracefully instead of
+// failing outright on hosts (e.g. Railway/Docker) with a stripped binary.
+const HAS_MINTERPOLATE = (() => {
+  try {
+    const filters = execFileSync(ffmpegPath, ["-filters"], { encoding: "utf8" });
+    return /\bminterpolate\b/.test(filters);
+  } catch (err) {
+    console.warn(`Could not query ffmpeg filters (${err.message}); assuming no minterpolate.`);
+    return false;
+  }
+})();
+if (!HAS_MINTERPOLATE) {
+  console.warn(
+    "ffmpeg build has no 'minterpolate' filter - falling back to tblend-based " +
+      "crossfade for scene motion (no true motion-compensated interpolation)."
+  );
+}
 
 // Burned-in captions: free, since the narration text already exists from
 // Groq. Skipped automatically if the font file isn't found, so this never
@@ -99,8 +124,14 @@ export function renderSceneClip({ scene, outputPath, motionMode = MI_MODE }) {
     // is CPU-heavy - the obmc/bidir/vsbmc options only apply to that mode.
     // "blend" is a cheap crossfade: much faster, used for scene regenerate
     // so a single-scene edit doesn't make someone wait 15+ seconds.
-    const motionFilter =
-      motionMode === "blend"
+    // tblend=average + framerate is the fallback: it blends adjacent frames
+    // into a soft crossfade, the same effect "blend" mode gets from
+    // minterpolate, just without true motion-compensated warping. Used for
+    // BOTH modes when minterpolate is unavailable, since "mci" has no other
+    // equivalent in a build that lacks the filter entirely.
+    const motionFilter = !HAS_MINTERPOLATE
+      ? `tblend=all_mode=average,framerate=fps=${OUTPUT_FPS}`
+      : motionMode === "blend"
         ? `minterpolate=fps=${OUTPUT_FPS}:mi_mode=blend`
         : `minterpolate=fps=${OUTPUT_FPS}:mi_mode=${motionMode}:mc_mode=obmc:me_mode=bidir:vsbmc=1`;
 
