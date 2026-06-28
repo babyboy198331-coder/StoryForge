@@ -33,11 +33,13 @@ if (!HAS_MINTERPOLATE) {
   );
 }
 
-// Some stripped Linux builds list minterpolate in -filters but fail at
-// runtime ("Filter not found"). This flag starts as HAS_MINTERPOLATE and is
-// flipped to false the first time a runtime failure is detected, so all
-// subsequent scene renders use the safe tblend fallback without retrying.
+// Both minterpolate and drawtext can appear in `ffmpeg -filters` on a
+// stripped Linux build (Railway/Docker) yet fail at runtime with "Filter not
+// found". The startup checks above are a best-effort first gate; these
+// mutable flags handle the case where a filter is listed but doesn't work,
+// by degrading one level at a time on the first runtime failure.
 let runtimeMinterpolate = HAS_MINTERPOLATE;
+let runtimeCaptions = CAPTIONS_ENABLED;
 
 // Burned-in captions: free, since the narration text already exists from
 // Groq. Skipped automatically if the font file isn't found, so this never
@@ -53,10 +55,27 @@ const CAPTION_FONT_RAW =
 // Windows-style path (e.g. from path.join on Windows) breaks the filter
 // string. Forward slashes work fine in ffmpeg paths on every OS.
 const CAPTION_FONT = CAPTION_FONT_RAW.replace(/\\/g, "/");
-const CAPTIONS_ENABLED = fs.existsSync(CAPTION_FONT_RAW);
-if (!CAPTIONS_ENABLED) {
+const CAPTION_FONT_EXISTS = fs.existsSync(CAPTION_FONT_RAW);
+if (!CAPTION_FONT_EXISTS) {
   console.warn(`Caption font not found at ${CAPTION_FONT_RAW} - captions will be disabled.`);
 }
+// drawtext requires libfreetype compiled into ffmpeg - stripped builds (e.g.
+// the Linux binary that ffmpeg-static installs on Railway/Docker) often omit
+// it. Check the filter list at startup so we never include drawtext in the
+// filter_complex on a build that can't run it.
+const HAS_DRAWTEXT = (() => {
+  if (!CAPTION_FONT_EXISTS) return false;
+  try {
+    const filters = execFileSync(ffmpegPath, ["-filters"], { encoding: "utf8" });
+    return /\bdrawtext\b/.test(filters);
+  } catch {
+    return false;
+  }
+})();
+if (CAPTION_FONT_EXISTS && !HAS_DRAWTEXT) {
+  console.warn("ffmpeg build has no 'drawtext' filter (libfreetype not compiled in) - captions will be disabled.");
+}
+const CAPTIONS_ENABLED = CAPTION_FONT_EXISTS && HAS_DRAWTEXT;
 
 // Background music: free, optional. Looks for a random track in MUSIC_DIR.
 // Mixed in quietly under narration, or used alone in caption-only mode.
@@ -117,7 +136,7 @@ export function sceneClipPath(workDir, sceneNumber) {
 // means regenerating a single scene later only has to pay this cost once,
 // for that one scene, instead of re-running it across every scene in the
 // reel just to change one of them.
-function buildSceneCommand({ scene, outputPath, motionMode, useFallback }) {
+function buildSceneCommand({ scene, outputPath, motionMode, useFallback, includeCaptions }) {
   const duration = scene.duration_seconds || 6;
   const halfDuration = Math.max(0.05, duration / 2);
 
@@ -149,7 +168,7 @@ function buildSceneCommand({ scene, outputPath, motionMode, useFallback }) {
     `;[pre]${motionFilter},` +
     `trim=duration=${duration},setsar=1`;
 
-  if (CAPTIONS_ENABLED && scene.narration) {
+  if (includeCaptions && scene.narration) {
     const caption = wrapAndEscapeCaption(scene.narration);
     complexFilter +=
       `,drawtext=fontfile='${CAPTION_FONT}':text='${caption}':fontsize=46:fontcolor=white:` +
@@ -172,23 +191,36 @@ export function renderSceneClip({ scene, outputPath, motionMode = MI_MODE }) {
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
   return new Promise((resolve, reject) => {
-    const attempt = (useFallback) => {
-      const command = buildSceneCommand({ scene, outputPath, motionMode, useFallback });
+    // Three degradation levels, tried in order until one succeeds:
+    //   1. minterpolate + captions  (if both pass startup checks)
+    //   2. tblend      + captions   (if minterpolate fails at runtime)
+    //   3. tblend      + no captions (if drawtext also fails at runtime)
+    // Each "Filter not found" failure disables that feature for ALL subsequent
+    // scene renders in this process so we don't retry it again needlessly.
+    const attempt = (useMotionFallback, includeCaptions) => {
+      const command = buildSceneCommand({
+        scene,
+        outputPath,
+        motionMode,
+        useFallback: useMotionFallback,
+        includeCaptions,
+      });
       command
         .on("end", () => resolve(outputPath))
         .on("error", (err) => {
-          // Some stripped Linux builds list minterpolate in `ffmpeg -filters`
-          // but fail with "Filter not found" at runtime. Detect this once,
-          // permanently disable minterpolate for all future renders, and retry
-          // this scene with the tblend fallback so the build doesn't abort.
-          if (!useFallback && /Filter not found/i.test(err.message)) {
-            console.warn(
-              "minterpolate listed but unavailable at runtime - " +
-                "switching to tblend fallback for all renders."
-            );
-            runtimeMinterpolate = false;
+          if (/Filter not found/i.test(err.message)) {
             fs.rmSync(outputPath, { force: true });
-            attempt(true);
+            if (!useMotionFallback) {
+              console.warn("minterpolate unavailable at runtime - switching to tblend for all renders.");
+              runtimeMinterpolate = false;
+              attempt(true, includeCaptions);
+            } else if (includeCaptions) {
+              console.warn("drawtext unavailable at runtime - disabling captions for all renders.");
+              runtimeCaptions = false;
+              attempt(true, false);
+            } else {
+              reject(err);
+            }
           } else {
             reject(err);
           }
@@ -196,7 +228,7 @@ export function renderSceneClip({ scene, outputPath, motionMode = MI_MODE }) {
         .run();
     };
 
-    attempt(!runtimeMinterpolate);
+    attempt(!runtimeMinterpolate, runtimeCaptions);
   });
 }
 
