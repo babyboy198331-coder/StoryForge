@@ -9,6 +9,21 @@ ffmpeg.setFfmpegPath(ffmpegPath);
 
 const OUTPUT_FPS = 30;
 
+// Output resolution for each scene clip. Was 1080x1920 (full vertical-reel
+// res) - even after switching "blend" mode to the genuinely cheap tblend
+// filter (see motionFilter below), a single scene's ffmpeg process still got
+// OOM-killed on Railway's 1GB replica cap, which this plan can't raise
+// (Settings > Replica Limits shows "Upgrade for higher limits" - 1GB/2vCPU
+// is the hard ceiling here). Pixel count drives most of ffmpeg's memory use
+// (decode buffers, filter graph frames, x264 frame buffers all scale with
+// width*height), so cutting resolution is the most direct remaining lever.
+// 720x1280 is 56% of the pixels of 1080x1920 - still well above what
+// Pollinations' free tier images need to look sharp on a phone screen, but
+// meaningfully lighter on memory. Overridable via env var if the memory
+// situation changes (e.g. a plan upgrade).
+const RENDER_WIDTH = Number(process.env.RENDER_WIDTH || 720);
+const RENDER_HEIGHT = Number(process.env.RENDER_HEIGHT || 1280);
+
 // Not every platform build of ffmpeg-static ships with "minterpolate" - the
 // Linux binaries pulled in by ffmpeg-static's installer are a smaller build
 // than e.g. the Windows gyan.dev "essentials" build, and have been known to
@@ -168,9 +183,9 @@ function buildSceneCommand({ scene, outputPath, motionMode, useFallback, include
       : `minterpolate=fps=${OUTPUT_FPS}:mi_mode=${motionMode}:mc_mode=obmc:me_mode=bidir:vsbmc=1`;
 
   let complexFilter =
-    `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,` +
+    `[0:v]scale=${RENDER_WIDTH}:${RENDER_HEIGHT}:force_original_aspect_ratio=increase,crop=${RENDER_WIDTH}:${RENDER_HEIGHT},` +
     `setsar=1,trim=duration=${halfDuration},fps=25[a]` +
-    `;[1:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,` +
+    `;[1:v]scale=${RENDER_WIDTH}:${RENDER_HEIGHT}:force_original_aspect_ratio=increase,crop=${RENDER_WIDTH}:${RENDER_HEIGHT},` +
     `setsar=1,trim=duration=${halfDuration},fps=25[b]` +
     `;[a][b]concat=n=2:v=1:a=0[pre]` +
     `;[pre]${motionFilter},` +
@@ -188,7 +203,19 @@ function buildSceneCommand({ scene, outputPath, motionMode, useFallback, include
 
   command
     .complexFilter(complexFilter)
-    .outputOptions(["-map [outv]", "-an", "-pix_fmt yuv420p", "-preset", "veryfast"])
+    .outputOptions([
+      "-map [outv]",
+      "-an",
+      "-pix_fmt yuv420p",
+      "-preset", "veryfast",
+      // Caps how many threads the filter graph and encoder each spin up.
+      // Each thread holds its own frame buffers, so on a 1GB memory cap,
+      // letting ffmpeg default to one thread per vCPU (2 here) roughly
+      // doubles peak memory for not much speed benefit on a clip this
+      // short. Single-threaded keeps the memory footprint predictable.
+      "-threads", "1",
+      "-filter_complex_threads", "1",
+    ])
     .fps(OUTPUT_FPS)
     .output(outputPath);
 
