@@ -84,11 +84,14 @@ const MUSIC_VOLUME = Number(process.env.MUSIC_VOLUME || 0.18);
 // Motion interpolation mode for the start/end still pair per scene:
 // "mci" = real motion-compensated interpolation (estimates motion vectors
 //   and warps between the two images - looks like actual movement, but is
-//   noticeably heavier on the CPU).
+//   noticeably heavier on the CPU AND memory - has been observed to get
+//   OOM-killed on memory-constrained hosts like Railway's 1GB replica cap).
 // "blend" = cheap frame-blend/crossfade between the two stills - much
-//   faster, looks more like a soft dissolve than movement.
-// Lower-end machines that struggled with other CPU-heavy steps in this
-// pipeline should set MOTION_INTERPOLATION_MODE=blend in .env.
+//   faster and far lighter on memory, looks more like a soft dissolve than
+//   movement.
+// Lower-end machines (or memory-capped hosts) that struggled with other
+// CPU-heavy steps in this pipeline should set MOTION_INTERPOLATION_MODE=blend
+// in .env / Railway variables.
 const MI_MODE = process.env.MOTION_INTERPOLATION_MODE || "mci";
 
 // Wraps text to multiple lines and escapes it for safe use inside a
@@ -145,18 +148,23 @@ function buildSceneCommand({ scene, outputPath, motionMode, useFallback, include
   command.input(scene.imagePathEnd).loop(halfDuration);
 
   // "mci" (motion-compensated interpolation) looks like real movement but
-  // is CPU-heavy - the obmc/bidir/vsbmc options only apply to that mode.
-  // "blend" is a cheap crossfade: much faster, used for scene regenerate
-  // so a single-scene edit doesn't make someone wait 15+ seconds.
-  // tblend=average + framerate is the fallback: it blends adjacent frames
-  // into a soft crossfade, the same effect "blend" mode gets from
-  // minterpolate, just without true motion-compensated warping. Used for
-  // BOTH modes when minterpolate is unavailable, since "mci" has no other
-  // equivalent in a build that lacks the filter entirely.
-  const motionFilter = useFallback
-    ? `tblend=all_mode=average,framerate=fps=${OUTPUT_FPS}`
-    : motionMode === "blend"
-      ? `minterpolate=fps=${OUTPUT_FPS}:mi_mode=blend`
+  // is CPU- AND memory-heavy - the obmc/bidir/vsbmc options only apply to
+  // that mode, and on a memory-constrained host (e.g. Railway's 1GB replica
+  // limit) it's been observed to get OOM-killed (ffmpeg exits with
+  // SIGKILL) on some scenes.
+  // "blend" routes straight to the tblend crossfade below - NOT through
+  // minterpolate's own mi_mode=blend option. minterpolate's blend mode is
+  // lighter than mci but still runs the full minterpolate filter machinery
+  // (frame-rate conversion, internal frame queues) and was still enough to
+  // get OOM-killed in production. tblend is a plain frame-average filter
+  // with none of that overhead, so it's the only mode that reliably stays
+  // under a 1GB memory cap.
+  // Used for both "blend" AND as the universal fallback when minterpolate
+  // is unavailable in this ffmpeg build at all (mci has no other
+  // equivalent there).
+  const motionFilter =
+    useFallback || motionMode === "blend"
+      ? `tblend=all_mode=average,framerate=fps=${OUTPUT_FPS}`
       : `minterpolate=fps=${OUTPUT_FPS}:mi_mode=${motionMode}:mc_mode=obmc:me_mode=bidir:vsbmc=1`;
 
   let complexFilter =
