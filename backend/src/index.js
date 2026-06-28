@@ -58,13 +58,29 @@ app.use("/api/admin", adminRouter);
 
 app.get("/api/health", (req, res) => res.json({ ok: true }));
 
-app.listen(PORT, () => {
-  console.log(`StoryForge backend running on http://localhost:${PORT}`);
-  seedFeaturedReel()
-    .then(({ id, r2 }) =>
-      console.log(`Pinned reel seeded (id=${id}, r2=${r2})`)
-    )
-    .catch((err) =>
-      console.warn(`Pinned reel seed skipped: ${err.message}`)
-    );
-});
+async function start() {
+  // Seed before accepting traffic so recruiters always see the dragon-delivery
+  // reel on first load. Retry a few times in case Postgres isn't ready yet
+  // (Railway can start the app container before the DB plugin is fully up).
+  let seeded = false;
+  for (let attempt = 1; attempt <= 5 && !seeded; attempt++) {
+    try {
+      const { id, r2 } = await seedFeaturedReel();
+      console.log(`Pinned reel seeded (id=${id}, r2=${r2})`);
+      seeded = true;
+    } catch (err) {
+      if (attempt < 5) {
+        console.warn(`Seed attempt ${attempt} failed (${err.message}) - retrying in 2s`);
+        await new Promise((r) => setTimeout(r, 2000));
+      } else {
+        console.warn(`Pinned reel seed skipped after ${attempt} attempts: ${err.message}`);
+      }
+    }
+  }
+
+  app.listen(PORT, () => {
+    console.log(`StoryForge backend running on http://localhost:${PORT}`);
+  });
+}
+
+start();
