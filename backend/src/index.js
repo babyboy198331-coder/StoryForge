@@ -1,4 +1,12 @@
 import "dotenv/config";
+// Polyfill the global Web Crypto API (globalThis.crypto) - Node only exposes
+// this without a flag starting in v19. We're pinned to Node 18.20.8 on
+// Railway, and msedge-tts calls crypto.subtle.digest()/crypto.getRandomValues()
+// directly as a bare global (no import), so without this it throws
+// "crypto is not defined" and narration synthesis silently fails, producing
+// reels with no audio track. Must run before anything else imports msedge-tts.
+import { webcrypto } from "node:crypto";
+if (!globalThis.crypto) globalThis.crypto = webcrypto;
 import express from "express";
 import cors from "cors";
 import path from "path";
