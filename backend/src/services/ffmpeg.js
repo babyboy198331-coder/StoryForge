@@ -39,7 +39,6 @@ if (!HAS_MINTERPOLATE) {
 // mutable flags handle the case where a filter is listed but doesn't work,
 // by degrading one level at a time on the first runtime failure.
 let runtimeMinterpolate = HAS_MINTERPOLATE;
-let runtimeCaptions = CAPTIONS_ENABLED;
 
 // Burned-in captions: free, since the narration text already exists from
 // Groq. Skipped automatically if the font file isn't found, so this never
@@ -76,6 +75,7 @@ if (CAPTION_FONT_EXISTS && !HAS_DRAWTEXT) {
   console.warn("ffmpeg build has no 'drawtext' filter (libfreetype not compiled in) - captions will be disabled.");
 }
 const CAPTIONS_ENABLED = CAPTION_FONT_EXISTS && HAS_DRAWTEXT;
+let runtimeCaptions = CAPTIONS_ENABLED;
 
 // Background music: free, optional. Looks for a random track in MUSIC_DIR.
 // Mixed in quietly under narration, or used alone in caption-only mode.
