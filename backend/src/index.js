@@ -4,7 +4,7 @@ import cors from "cors";
 import path from "path";
 import storyRouter from "./routes/story.js";
 import reelsRouter from "./routes/reels.js";
-import adminRouter from "./routes/admin.js";
+import adminRouter, { seedFeaturedReel } from "./routes/admin.js";
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -60,4 +60,11 @@ app.get("/api/health", (req, res) => res.json({ ok: true }));
 
 app.listen(PORT, () => {
   console.log(`StoryForge backend running on http://localhost:${PORT}`);
+  seedFeaturedReel()
+    .then(({ id, r2 }) =>
+      console.log(`Pinned reel seeded (id=${id}, r2=${r2})`)
+    )
+    .catch((err) =>
+      console.warn(`Pinned reel seed skipped: ${err.message}`)
+    );
 });
