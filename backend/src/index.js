@@ -32,7 +32,7 @@ const allowedOrigins = FRONTEND_URL
 // stable production domain set above. Allow those too, so CORS doesn't break
 // just because someone opens a deployment-specific link (which Vercel shows
 // after every deploy) instead of the production URL.
-const VERCEL_PREVIEW_PATTERN = /^https:\/\/story-forge-[a-z0-9]+-babyboy198331-coders-projects\.vercel\.app$/;
+const VERCEL_PREVIEW_PATTERN = /^https:\/\/story-forge-[a-z0-9]+-jbass-devs-projects\.vercel\.app$/;
 
 app.use(
   cors(
