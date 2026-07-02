@@ -1,11 +1,11 @@
 # StoryForge
 
-An AI-generated short-drama reel app (a "Reelz"-style portfolio project). You
-give it a one-line pitch and a genre; it writes a script, generates
-comic-style scene art, narrates it, burns in captions, scores it with
-background music, and stitches everything into a vertical MP4 you can swipe
-through in a TikTok-style feed. Every piece of the pipeline runs on a free
-tier or self-hosted tool - no paid APIs required.
+**[▶ Live demo](https://story-forge-tau-three.vercel.app)** — one prompt in, a finished vertical reel out.
+
+<img width="1300" height="851" alt="StoryForge live app" src="https://github.com/user-attachments/assets/543da502-9f82-4bce-9fb3-56caa72f8534" />
+
+An AI-generated short-drama video app (a portfolio project). You give it a one-line pitch and a genre; it writes a script, generates comic-style scene art, narrates it, burns in captions, scores it with background music, and stitches everything into a single vertical MP4 that plays start to finish. Below the player, the reel's 5-10 scenes are listed and any scene can be regenerated individually. Every piece of the pipeline runs on a free tier or self-hosted tool - no paid APIs required.
+
 
 ## Pipeline
 
